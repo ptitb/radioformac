@@ -1,0 +1,82 @@
+#!/bin/bash
+#
+# Builds universal (arm64 + x86_64) static FFmpeg libraries for macOS
+# from the FFmpeg 2.1 sources in ./ffmpeg and installs them into the
+# Radio project (Radio/Radio/Third-Party-Libs/ffmpeg).
+#
+# Usage: ./build-ffmpeg-macos
+#
+# Requirements: Xcode command line tools. No assembler is needed because
+# hand-written assembly is disabled (only WMA decoding is used, which is cheap).
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SOURCE_DIR="$SCRIPT_DIR/ffmpeg"
+WORK_DIR="$SCRIPT_DIR/build-macos"
+INSTALL_DIR="$SCRIPT_DIR/../Radio/Radio/Third-Party-Libs/ffmpeg"
+
+ARCHS="arm64 x86_64"
+MIN_MACOS_VERSION="${MIN_MACOS_VERSION:-11.0}"
+SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+CC="$(xcrun --sdk macosx --find clang)"
+LIBS="libavcodec libavformat libavutil libswresample"
+
+# Minimal feature set: only what the radio player needs (WMA over MMS/HTTP).
+source "$SCRIPT_DIR/ffmpeg-conf"
+
+rm -rf "$WORK_DIR"
+mkdir -p "$WORK_DIR"
+
+for ARCH in $ARCHS; do
+    echo "=== Building FFmpeg for $ARCH ==="
+    BUILD_DIR="$WORK_DIR/build-$ARCH"
+    PREFIX="$WORK_DIR/dist-$ARCH"
+    cp -R "$SOURCE_DIR" "$BUILD_DIR"
+
+    case $ARCH in
+        arm64)  FFMPEG_ARCH=aarch64 ;;
+        x86_64) FFMPEG_ARCH=x86_64 ;;
+    esac
+
+    ARCH_FLAGS="-arch $ARCH -isysroot $SDK_PATH -mmacosx-version-min=$MIN_MACOS_VERSION"
+
+    (
+        cd "$BUILD_DIR"
+        # Modern clang treats some old FFmpeg code patterns as errors; relax them.
+        EXTRA_CFLAGS="$ARCH_FLAGS -Wno-error=implicit-function-declaration -Wno-error=incompatible-function-pointer-types -Wno-error=int-conversion"
+
+        ./configure \
+            --cc="$CC" \
+            --enable-cross-compile \
+            --target-os=darwin \
+            --arch="$FFMPEG_ARCH" \
+            --enable-pic \
+            --disable-asm \
+            --disable-programs \
+            --disable-doc \
+            --extra-cflags="$EXTRA_CFLAGS" \
+            --extra-ldflags="$ARCH_FLAGS" \
+            --prefix="$PREFIX" \
+            $CONFIGURE_OPTIONS
+
+        make -j"$(sysctl -n hw.ncpu)"
+        make install
+    )
+done
+
+echo "=== Creating universal libraries ==="
+mkdir -p "$INSTALL_DIR/lib"
+for LIB in $LIBS; do
+    INPUTS=""
+    for ARCH in $ARCHS; do
+        INPUTS="$INPUTS $WORK_DIR/dist-$ARCH/lib/$LIB.a"
+    done
+    lipo -create $INPUTS -output "$INSTALL_DIR/lib/$LIB.a"
+    lipo -info "$INSTALL_DIR/lib/$LIB.a"
+done
+
+rm -rf "$INSTALL_DIR/include"
+cp -R "$WORK_DIR/dist-arm64/include" "$INSTALL_DIR/include"
+
+echo "Done. Libraries installed in $INSTALL_DIR"
