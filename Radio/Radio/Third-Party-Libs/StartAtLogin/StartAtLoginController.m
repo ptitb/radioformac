@@ -71,6 +71,18 @@
         return NO;
     }
 
+    // macOS 13+: ask the modern Service Management API for the helper's status.
+    if (@available(macOS 13.0, *)) {
+        SMAppService *service = [SMAppService loginItemServiceWithIdentifier:_identifier];
+        BOOL isEnabled = (service.status == SMAppServiceStatusEnabled);
+        if (isEnabled != _enabled) {
+            [self willChangeValueForKey:@"enabled"];
+            _enabled = isEnabled;
+            [self didChangeValueForKey:@"enabled"];
+        }
+        return isEnabled;
+    }
+
     BOOL isEnabled = NO;
 
     // the easy and sane method (SMJobCopyDictionary) can pose problems when sandboxed. -_-
@@ -102,15 +114,31 @@
 
     [self willChangeValueForKey:@"startAtLogin"];
 
-    if (!SMLoginItemSetEnabled((__bridge CFStringRef)_identifier, (flag) ? true : false)) {
-        NSLog(@"SMLoginItemSetEnabled failed!");
+    BOOL succeeded;
+    if (@available(macOS 13.0, *)) {
+        // SMLoginItemSetEnabled is deprecated; register the bundled helper via SMAppService.
+        SMAppService *service = [SMAppService loginItemServiceWithIdentifier:_identifier];
+        NSError *error = nil;
+        succeeded = flag ? [service registerAndReturnError:&error] : [service unregisterAndReturnError:&error];
+        if (!succeeded) {
+            NSLog(@"SMAppService %@ failed: %@", flag ? @"register" : @"unregister", error);
+        }
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        succeeded = SMLoginItemSetEnabled((__bridge CFStringRef)_identifier, (flag) ? true : false);
+#pragma clang diagnostic pop
+    }
+
+    if (!succeeded) {
+        NSLog(@"Changing start at login failed!");
 
         [self willChangeValueForKey:@"enabled"];
         _enabled = NO;
         [self didChangeValueForKey:@"enabled"];
     } else {
         [self willChangeValueForKey:@"enabled"];
-        _enabled = YES;
+        _enabled = flag;
         [self didChangeValueForKey:@"enabled"];
     }
 
