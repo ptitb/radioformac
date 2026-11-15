@@ -424,7 +424,10 @@
 - (void)syncFromInternetWithLastModifiedDate:(NSDate *)lastModifiedDate {
         NSLog(@"[RADIO] Starting library sync");
         _libraryUpdating = YES;
-        _statusItem.menu = _statusLibraryUpdatingMenu;
+        // UI changes must happen on the main thread (modern macOS traps otherwise).
+        dispatch_async(dispatch_get_main_queue(), ^{
+            _statusItem.menu = _statusLibraryUpdatingMenu;
+        });
     
         NSURL *url = [NSURL URLWithString:kLibraryPlistUrl];
         NSDictionary *library = [[NSDictionary alloc] initWithContentsOfURL:url];
@@ -527,12 +530,15 @@
             [[NSUserDefaults standardUserDefaults] setObject:lastModifiedDate forKey:@"latestLastModifiedDateForRadioLibrary"];
             [[NSUserDefaults standardUserDefaults] synchronize];
             
-            _lastSync = [NSDate date];
-            [_syncTimer invalidate];
-            _syncTimer = [NSTimer scheduledTimerWithTimeInterval:kOneDay target:self selector:@selector(sync) userInfo:nil repeats:YES];
-            
-            _statusItem.menu = _statusMenu;
-            _libraryUpdating = NO;
+            // Timer and menu belong to the main run loop / main thread.
+            dispatch_async(dispatch_get_main_queue(), ^{
+                _lastSync = [NSDate date];
+                [_syncTimer invalidate];
+                _syncTimer = [NSTimer scheduledTimerWithTimeInterval:kOneDay target:self selector:@selector(sync) userInfo:nil repeats:YES];
+
+                _statusItem.menu = _statusMenu;
+                _libraryUpdating = NO;
+            });
             NSLog(@"Ended library sync");
         }];
 }
